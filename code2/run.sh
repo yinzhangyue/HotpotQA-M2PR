@@ -1,0 +1,4 @@
+python process_original_data.py --test_file_path hotpot_dev_distractor_v1.json --output_more_path dev_eval_more.json --output_two_path dev_eval_two.json && \
+CUDA_VISIBLE_DEVICES=0 python test.py --mode RE --Hotpot_dev_path_more dev_eval_more.json --Selection_save_filename Roberta_selection.json && \
+python mid_process.py --Hotpot_dev_path_more dev_eval_more.json --Hotpot_dev_path_two dev_eval_two.json --Hotpot_dev_path_all dev_eval_all.json --Selection_save_filename Roberta_selection.json --Selected_titles_path selected_titles.json && \
+CUDA_VISIBLE_DEVICES=0 python test.py --mode QA --Hotpot_dev_path_all dev_eval_all.json --Output_save_filename dev_pred.json --Selected_titles_path selected_titles.json
