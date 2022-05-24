@@ -311,7 +311,7 @@ class HotpotQATestPipe(Pipe):
         # SEP
         self.SEP_token = "</e>"
         self.SEP_id = tokenizer.convert_tokens_to_ids(self.SEP_token)
-        self.max_length = 1024
+        self.max_length = 512
         self.target = [
             "id",
             "answer",
@@ -403,7 +403,6 @@ class HotpotQATestPipe(Pipe):
                 max_length=self.max_length,
                 return_offsets_mapping=True,
             )
-            # ipdb.set_trace()
 
             sequence_ids = output.sequence_ids(0)
             d = dict(output)
