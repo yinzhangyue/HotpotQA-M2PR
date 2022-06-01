@@ -1,12 +1,11 @@
 import torch
 import copy
-import ipdb
 from fastNLP.core.metrics import MetricBase
 from fastNLP.core.losses import LossBase
+from model import *
 from collections import Counter
 import string
 import re
-import json
 
 
 class commonLoss(LossBase):
@@ -16,6 +15,15 @@ class commonLoss(LossBase):
 
     def get_loss(self, loss):
         return loss
+
+
+def write_answer(
+    prediction_tokens, ground_truth_tokens, file_path="./Roberta_answer.txt"
+):
+    with open(file_path, "a", encoding="utf-8") as f:
+        f.write(
+            "Prediction:{}, Target:{}\n".format(prediction_tokens, ground_truth_tokens)
+        )
 
 
 def normalize_answer(s):
@@ -42,15 +50,18 @@ class DocselectionMetric(MetricBase):
 
     def __init__(
         self,
-        save_filename,
         tokenizer=None,
         selected_pair="selected_pair",
         gold_doc_pair="gold_doc_pair",
-        gold_answer_doc="gold_answer_doc",
         doc_num="doc_num",
+        gold_answer_doc="gold_answer_doc",
         id="id",
+        doc_select_3="doc_select_3",
+        doc_select_3_save_filename="./doc_select_3.json",
+        save_filename="./selectiondict.json",
     ):
         r"""
+
         :param pred: 参数映射表中 `pred` 的映射关系，None表示映射关系为 `pred` -> `pred`
         :param target: 参数映射表中 `target` 的映射关系，None表示映射关系为 `target` -> `target`
         :param seq_len: 参数映射表中 `seq_len` 的映射关系，None表示映射关系为 `seq_len` -> `seq_len`
@@ -61,16 +72,21 @@ class DocselectionMetric(MetricBase):
         self._init_param_map(
             selected_pair=selected_pair,
             gold_doc_pair=gold_doc_pair,
-            gold_answer_doc=gold_answer_doc,
             doc_num=doc_num,
+            gold_answer_doc=gold_answer_doc,
             id=id,
+            doc_select_3=doc_select_3,
         )
         self.tokenizer = tokenizer
         self.metrics = {"em": 0, "f1": 0, "prec": 0, "recall": 0, "Gold": 0}
         self.outputdict = {}
+        self.doc_select_3_dict = {}
         self.save_filename = save_filename
+        self.doc_select_3_save_filename = doc_select_3_save_filename
 
-    def evaluate(self, selected_pair, gold_doc_pair, gold_answer_doc, doc_num, id):
+    def evaluate(
+        self, selected_pair, gold_doc_pair, doc_num, gold_answer_doc, id, doc_select_3
+    ):
         r"""
         evaluate函数将针对一个批次的预测结果做评价指标的累计
 
@@ -93,19 +109,23 @@ class DocselectionMetric(MetricBase):
             docnum = doc_num[b]
 
             self.outputdict[id_] = str(list(selected.detach().cpu().numpy()))
-            # Doc EM
-            if Counter(selected.detach().cpu().numpy()) == Counter(gold.detach().cpu().numpy()):
-                self.metrics["em"] += 1
-            # Doc Gold
-            self.metrics["Gold"] += 1 if goldanswer.item() == -1 or goldanswer.item() in selected.tolist() else 0
+            self.doc_select_3_dict[id_] = str(list(doc_select_3.detach().cpu().numpy()))
+            # ipdb.set_trace()
 
+            if Counter(selected.detach().cpu().numpy()) == Counter(
+                gold.detach().cpu().numpy()
+            ):
+                self.metrics["em"] += 1
+            for select in selected:
+                if select in goldanswer:
+                    self.metrics["Gold"] += 1
+                    break
             tp, fp, fn = 0, 0, 0
             selectedlist = torch.zeros(docnum)
             goldlist = torch.zeros(docnum)
-            # Make 0/1
             for t in selected:
                 if t >= len(selectedlist):
-                    print("OverFlow Warning", t, selectedlist)
+                    print(t, selectedlist)
                     continue
                 selectedlist[t] = 1
             for t in gold:
@@ -132,8 +152,10 @@ class DocselectionMetric(MetricBase):
         :param bool reset: 在调用完get_metric后是否清空评价指标统计量.
         :return dict evaluate_result: {"acc": float}
         """
-        # with open(self.save_filename, "w", encoding="utf-8") as f:
-        #     json.dump(self.outputdict, f, ensure_ascii=False)
+        with open(self.save_filename, "w", encoding="utf-8") as f:
+            json.dump(self.outputdict, f, ensure_ascii=False)
+        with open(self.doc_select_3_save_filename, "w", encoding="utf-8") as f:
+            json.dump(self.doc_select_3_dict, f, ensure_ascii=False)
 
         evaluate_result = copy.deepcopy(self.metrics)
         for k in evaluate_result.keys():
@@ -152,8 +174,6 @@ class SpanSentenceMetric(MetricBase):
 
     def __init__(
         self,
-        selected_title_list_filename,
-        save_filename,
         tokenizer=None,
         type_logits="type_logits",
         start_logits="start_logits",
@@ -163,8 +183,6 @@ class SpanSentenceMetric(MetricBase):
         input_ids="input_ids",
         answer="answer",
         sentence_num="sentence_num",
-        DOC1_SEP_num="DOC1_SEP_num",  # DOC1 sep的数量
-        id="id",
     ):
         r"""
 
@@ -184,8 +202,6 @@ class SpanSentenceMetric(MetricBase):
             input_ids="input_ids",
             answer="answer",
             sentence_num="sentence_num",
-            DOC1_SEP_num="DOC1_SEP_num",  # DOC1 sep的数量
-            id="id",
         )
         self.tokenizer = tokenizer
         self.metrics = {
@@ -202,11 +218,6 @@ class SpanSentenceMetric(MetricBase):
             "joint_prec": 0,
             "joint_recall": 0,
         }
-        self.selected_title_list_filename = selected_title_list_filename
-        self.save_filename = save_filename
-        self.answer_dict = {}
-        self.sp_dict = {}
-        self.sp_tmp = {}
 
     def evaluate(
         self,
@@ -218,8 +229,6 @@ class SpanSentenceMetric(MetricBase):
         input_ids,
         answer,
         sentence_num,
-        DOC1_SEP_num,
-        id,
     ):
         r"""
         evaluate函数将针对一个批次的预测结果做评价指标的累计
@@ -244,7 +253,7 @@ class SpanSentenceMetric(MetricBase):
             )
             text = answer[batch]
             sentence = sentence_num[batch]
-            ids = input_ids[batch].tolist()
+            ids = input_ids[batch]
 
             anstype = torch.argmax(type_logit).item()
             if anstype == 0:
@@ -255,29 +264,34 @@ class SpanSentenceMetric(MetricBase):
                 start = torch.argmax(start).item()
                 end = torch.argmax(end).item()
                 span_id = ids[start : end + 1]
-
+                # ipdb.set_trace()
                 if span_id is None:
                     answers = ""
                 else:
                     answers = self.tokenizer.decode(span_id)
                     answers = normalize_answer(answers)
-
             # print("Target:{}\nPred:{}".format(text, answers))
             text = normalize_answer(text)
             em = answers == text
             normalized_prediction = answers
             normalized_ground_truth = text
             # print("gold:", answers, " predict:", text)
-
-            # store answer
-            self.answer_dict[id[batch]] = normalized_prediction
-
+            # ipdb.set_trace()
             ZERO_METRIC = (0, 0, 0)
-            if normalized_prediction in ["yes", "no"] and normalized_prediction != normalized_ground_truth:
+            if (
+                normalized_prediction in ["yes", "no"]
+                and normalized_prediction != normalized_ground_truth
+            ):
                 f1, precision, recall = ZERO_METRIC
-            elif normalized_ground_truth in ["yes", "no"] and normalized_prediction != normalized_ground_truth:
+            elif (
+                normalized_ground_truth in ["yes", "no"]
+                and normalized_prediction != normalized_ground_truth
+            ):
                 f1, precision, recall = ZERO_METRIC
             else:
+                # write answer
+                write_answer(normalized_prediction, normalized_ground_truth)
+
                 prediction_tokens = normalized_prediction.split()
                 ground_truth_tokens = normalized_ground_truth.split()
                 common = Counter(prediction_tokens) & Counter(ground_truth_tokens)
@@ -294,25 +308,22 @@ class SpanSentenceMetric(MetricBase):
             self.metrics["recall"] += recall
 
             tp, fp, fn = ZERO_METRIC
-            sp = {0: [], 1: []}
+
             for s in range(sentence):
                 if prediction[s] == 1:
                     if gold[s] == 1:
                         tp += 1
                     else:
                         fp += 1
-
-                    if s < DOC1_SEP_num[batch].item():
-                        sp[0].append(s)
-                    else:
-                        sp[1].append(s - DOC1_SEP_num[batch].item())
                 elif gold[s] == 1:
                     fn += 1
-            self.sp_tmp[id[batch]] = sp
-
             sp_prec = 1.0 * tp / (tp + fp) if tp + fp > 0 else 0.0
             sp_recall = 1.0 * tp / (tp + fn) if tp + fn > 0 else 0.0
-            sp_f1 = 2 * sp_prec * sp_recall / (sp_prec + sp_recall) if sp_prec + sp_recall > 0 else 0.0
+            sp_f1 = (
+                2 * sp_prec * sp_recall / (sp_prec + sp_recall)
+                if sp_prec + sp_recall > 0
+                else 0.0
+            )
             sp_em = 1.0 if fp + fn < 1 else 0.0
             self.metrics["sp_em"] += sp_em
             self.metrics["sp_f1"] += sp_f1
@@ -326,6 +337,7 @@ class SpanSentenceMetric(MetricBase):
             else:
                 joint_f1 = 0.0
             joint_em = em * sp_em
+
             self.metrics["joint_em"] += joint_em
             self.metrics["joint_f1"] += joint_f1
             self.metrics["joint_prec"] += joint_prec
@@ -338,20 +350,6 @@ class SpanSentenceMetric(MetricBase):
         :param bool reset: 在调用完get_metric后是否清空评价指标统计量.
         :return dict evaluate_result: {"acc": float}
         """
-        # with open(self.selected_title_list_filename, encoding="utf-8") as f:
-        #     selected_title_dict = json.load(f)
-        # for id in selected_title_dict.keys():
-        #     list_tmp = []
-        #     for i in self.sp_tmp[id][0]:
-        #         list_tmp.append([selected_title_dict[id][0], i])
-        #     for i in self.sp_tmp[id][1]:
-        #         list_tmp.append([selected_title_dict[id][1], i])
-        #     self.sp_dict[id] = list_tmp
-        # # store final result file
-        # with open(self.save_filename, "w", encoding="utf-8") as f:
-        #     json.dump(
-        #         {"answer": self.answer_dict, "sp": self.sp_dict}, f, ensure_ascii=False
-        #     )
 
         evaluate_result = copy.deepcopy(self.metrics)
 
